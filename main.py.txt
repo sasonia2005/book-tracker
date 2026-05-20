@@ -24,7 +24,7 @@ import sys
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
-
+#Version: 1.0.0 - Initial release with duplicate check
 # Настройка логирования (отладка)
 logging.basicConfig(
     level=logging.INFO,
