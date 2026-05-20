@@ -1,0 +1,638 @@
+#!/usr/bin/env python3
+"""
+Book Tracker - Система учета прочитанных книг
+
+Это приложение позволяет вести список прочитанных книг,
+ставить им оценки, смотреть статистику и управлять библиотекой.
+
+Требования задания:
+- Совместная работа через Git (ветки, коммиты, PR)
+- Разрешение конфликтов
+- Комментирование изменений
+- Планирование задач (Issues)
+- Документация
+- Модульные тесты
+- Отладка (логирование)
+
+Author: Команда разработки
+Version: 2.1.0
+"""
+
+import json
+import logging
+import sys
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from pathlib import Path
+
+# Настройка логирования (отладка)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('book_tracker.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Константы
+FILE_NAME = "books.json"
+VALID_RATINGS = range(1, 6)
+
+
+# ============================================================
+# МОДУЛЬ ВАЛИДАЦИИ (исправлено: проверка существования даты)
+# ============================================================
+
+def validate_date(date_string: str) -> Optional[str]:
+    """
+    Проверяет, существует ли дата.
+    
+    Args:
+        date_string: Дата в формате YYYY-MM-DD или DD.MM.YYYY
+        
+    Returns:
+        str: Дата в формате YYYY-MM-DD или None если дата некорректна
+        
+    Examples:
+        >>> validate_date("2024-12-25")
+        '2024-12-25'
+        >>> validate_date("25.12.2024")
+        '2024-12-25'
+        >>> validate_date("32.13.2024")
+        None
+        >>> validate_date("12.45.2009")  # 45 дня не существует
+        None
+    """
+    if not date_string:
+        return None
+    
+    # Пробуем формат YYYY-MM-DD
+    try:
+        parsed = datetime.strptime(date_string, "%Y-%m-%d")
+        # Дополнительная проверка на валидность (strptime уже проверяет)
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+    
+    # Пробуем формат DD.MM.YYYY
+    try:
+        parsed = datetime.strptime(date_string, "%d.%m.%Y")
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+    
+    logger.warning(f"Некорректная дата: {date_string}")
+    return None
+
+
+def get_valid_date(prompt: str = "Введите дату прочтения") -> str:
+    """
+    Запрашивает у пользователя дату и проверяет её корректность.
+    Повторяет запрос до тех пор, пока не будет введена корректная дата.
+    
+    Args:
+        prompt: Текст приглашения для ввода
+        
+    Returns:
+        str: Корректная дата в формате YYYY-MM-DD
+        
+    Examples:
+        >>> # Пользователь вводит "32.13.2024" -> ошибка, повторный запрос
+        >>> # Пользователь вводит "25.12.2024" -> успех, возвращает "2024-12-25"
+    """
+    print(f"\n📅 {prompt}")
+    print("   📌 Поддерживаемые форматы:")
+    print("      • ГГГГ-ММ-ДД (например: 2024-12-25)")
+    print("      • ДД.ММ.ГГГГ (например: 25.12.2024)")
+    print("   💡 Если оставить пустым - будет использована сегодняшняя дата")
+    print()
+    
+    while True:
+        date_input = input("👉 Введите дату: ").strip()
+        
+        # Если пользователь ничего не ввел, используем сегодняшнюю дату
+        if not date_input:
+            today = datetime.now().strftime("%Y-%m-%d")
+            print(f"   ✅ Использована сегодняшняя дата: {today}\n")
+            return today
+        
+        # Проверяем корректность даты
+        validated_date = validate_date(date_input)
+        
+        if validated_date:
+            print(f"   ✅ Дата принята: {validated_date}\n")
+            return validated_date
+        else:
+            print("\n   ❌ ОШИБКА: Введена некорректная дата!")
+            print(f"   🔍 Вы ввели: '{date_input}'")
+            print("   📋 Примеры корректных дат:")
+            print("      • 25.12.2024 (25 декабря 2024 года)")
+            print("      • 2024-12-25 (25 декабря 2024 года)")
+            print("      • 29.02.2024 (29 февраля 2024 - високосный год)")
+            print("   ❌ Некорректные примеры:")
+            print("      • 32.13.2024 (32 дня, 13 месяцев)")
+            print("      • 31.02.2024 (31 февраля не существует)")
+            print("      • 12.45.2009 (45 дней не существует)")
+            print("\n   🔄 Пожалуйста, попробуйте снова:\n")
+
+
+# ============================================================
+# МОДУЛЬ МОДЕЛЕЙ ДАННЫХ
+# ============================================================
+
+class Book:
+    """Модель книги."""
+    
+    def __init__(self, author: str, title: str, rating: int, date_read: str):
+        """
+        Инициализация книги.
+        
+        Args:
+            author: Имя автора
+            title: Название книги
+            rating: Оценка от 1 до 5
+            date_read: Дата прочтения в формате YYYY-MM-DD
+        """
+        self.author = author
+        self.title = title
+        self.rating = rating
+        self.date_read = date_read
+    
+    def to_dict(self) -> Dict:
+        """Конвертирует книгу в словарь для JSON."""
+        return {
+            "author": self.author,
+            "title": self.title,
+            "rating": self.rating,
+            "date_read": self.date_read
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'Book':
+        """Создает книгу из словаря."""
+        return cls(
+            author=data["author"],
+            title=data["title"],
+            rating=data["rating"],
+            date_read=data["date_read"]
+        )
+    
+    def __str__(self) -> str:
+        """Строковое представление книги."""
+        return f"{self.title} — {self.author}, оценка: {self.rating}, дата: {self.date_read}"
+
+
+class BookRepository:
+    """Репозиторий для работы с хранилищем книг."""
+    
+    def __init__(self, file_name: str = FILE_NAME):
+        self.file_name = file_name
+        logger.info(f"Инициализация репозитория с файлом {file_name}")
+    
+    def load_books(self) -> List[Book]:
+        """
+        Загружает книги из JSON файла.
+        
+        Returns:
+            List[Book]: Список книг
+        """
+        try:
+            with open(self.file_name, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                logger.info(f"Загружено {len(data)} книг")
+                return [Book.from_dict(book) for book in data]
+        except FileNotFoundError:
+            logger.warning(f"Файл {self.file_name} не найден, создан пустой список")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON: {e}")
+            return []
+    
+    def save_books(self, books: List[Book]) -> None:
+        """
+        Сохраняет книги в JSON файл.
+        
+        Args:
+            books: Список книг для сохранения
+        """
+        try:
+            data = [book.to_dict() for book in books]
+            with open(self.file_name, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            logger.info(f"Сохранено {len(books)} книг")
+        except IOError as e:
+            logger.error(f"Ошибка сохранения файла: {e}")
+            raise
+
+
+# ============================================================
+# МОДУЛЬ СЕРВИСОВ (БИЗНЕС-ЛОГИКА)
+# ============================================================
+
+class BookService:
+    """Сервис для операций с книгами."""
+    
+    def __init__(self, repository: BookRepository):
+        self.repository = repository
+    
+    def add_book(self, author: str, title: str, rating: int, date_read: str) -> Optional[Book]:
+        """
+        Добавляет новую книгу.
+        
+        Args:
+            author: Имя автора
+            title: Название книги
+            rating: Оценка от 1 до 5
+            date_read: Дата прочтения (уже должна быть валидирована)
+            
+        Returns:
+            Book: Добавленная книга или None при ошибке
+        """
+        # Валидация данных
+        if not author or not title:
+            logger.warning("Попытка добавить книгу без автора или названия")
+            print("❌ Ошибка: автор и название не могут быть пустыми!")
+            return None
+        
+        if rating not in VALID_RATINGS:
+            logger.warning(f"Некорректная оценка: {rating}")
+            print("❌ Ошибка: оценка должна быть от 1 до 5!")
+            return None
+        
+        # Проверка на дубликат
+        books = self.repository.load_books()
+        if any(book.author == author and book.title == title for book in books):
+            logger.info(f"Книга '{title}' уже существует")
+            print(f"⚠️  Книга '{title}' автора {author} уже есть в списке!")
+            return None
+        
+        new_book = Book(author, title, rating, date_read)
+        books.append(new_book)
+        self.repository.save_books(books)
+        logger.info(f"Книга '{title}' добавлена успешно")
+        return new_book
+    
+    def get_all_books(self) -> List[Book]:
+        """Возвращает все книги."""
+        return self.repository.load_books()
+    
+    def get_average_rating(self) -> float:
+        """
+        Возвращает среднюю оценку всех книг.
+        
+        Returns:
+            float: Средняя оценка (0.0 если книг нет)
+        """
+        books = self.repository.load_books()
+        if not books:
+            return 0.0
+        return sum(book.rating for book in books) / len(books)
+    
+    def get_author_stats(self) -> Dict[str, int]:
+        """
+        Возвращает статистику по авторам.
+        
+        Returns:
+            Dict[str, int]: Словарь {автор: количество книг}
+        """
+        books = self.repository.load_books()
+        stats = {}
+        for book in books:
+            stats[book.author] = stats.get(book.author, 0) + 1
+        return stats
+    
+    def delete_book(self, index: int) -> bool:
+        """
+        Удаляет книгу по индексу.
+        
+        Args:
+            index: Индекс книги в списке (начиная с 0)
+            
+        Returns:
+            bool: True если удаление успешно, иначе False
+        """
+        books = self.repository.load_books()
+        if 0 <= index < len(books):
+            removed = books.pop(index)
+            self.repository.save_books(books)
+            logger.info(f"Книга '{removed.title}' удалена")
+            print(f"✅ Книга '{removed.title}' успешно удалена!")
+            return True
+        logger.warning(f"Попытка удалить несуществующий индекс: {index}")
+        print("❌ Неверный номер книги!")
+        return False
+    
+    def search_books(self, query: str) -> List[Book]:
+        """
+        Поиск книг по автору или названию.
+        
+        Args:
+            query: Поисковый запрос
+            
+        Returns:
+            List[Book]: Список найденных книг
+        """
+        books = self.repository.load_books()
+        query_lower = query.lower()
+        results = [
+            book for book in books
+            if query_lower in book.title.lower() or query_lower in book.author.lower()
+        ]
+        logger.info(f"Поиск '{query}': найдено {len(results)} книг")
+        return results
+
+
+# ============================================================
+# МОДУЛЬ CLI (ИНТЕРФЕЙС КОМАНДНОЙ СТРОКИ)
+# ============================================================
+
+class BookTrackerCLI:
+    """Интерфейс командной строки для Book Tracker."""
+    
+    def __init__(self):
+        self.repository = BookRepository()
+        self.service = BookService(self.repository)
+    
+    def display_menu(self):
+        """Отображает главное меню."""
+        print("\n" + "=" * 50)
+        print("📚 BOOK TRACKER - Учет прочитанных книг")
+        print("=" * 50)
+        print("1. 📖 Добавить книгу")
+        print("2. 📋 Показать все книги")
+        print("3. ⭐ Средняя оценка")
+        print("4. 👨‍💻 Статистика по авторам")
+        print("5. 🗑️  Удалить книгу")
+        print("6. 🔍 Поиск книг")
+        print("7. 🧪 Запустить тесты")
+        print("8. 🚪 Выход")
+        print("-" * 50)
+    
+    def add_book_interactive(self):
+        """Интерактивное добавление книги."""
+        print("\n--- Добавление новой книги ---")
+        
+        author = input("Введите автора: ").strip()
+        if not author:
+            print("❌ Автор не может быть пустым!")
+            return
+        
+        title = input("Введите название книги: ").strip()
+        if not title:
+            print("❌ Название не может быть пустым!")
+            return
+        
+        # Ввод оценки с проверкой
+        while True:
+            try:
+                rating = int(input("Введите оценку (1–5): "))
+                if 1 <= rating <= 5:
+                    break
+                print("❌ Оценка должна быть от 1 до 5!")
+            except ValueError:
+                print("❌ Пожалуйста, введите целое число!")
+        
+        # Ввод даты с валидацией и повторным запросом при ошибке
+        date_read = get_valid_date("Введите дату прочтения книги")
+        
+        # Пытаемся добавить книгу
+        book = self.service.add_book(author, title, rating, date_read)
+        if book:
+            print(f"\n✅ Книга успешно добавлена!")
+            print(f"   {book}")
+    
+    def show_all_books_interactive(self):
+        """Показывает все книги."""
+        books = self.service.get_all_books()
+        
+        if not books:
+            print("\n📭 Список книг пуст. Добавьте первую книгу!")
+            return
+        
+        print("\n" + "=" * 60)
+        print(f"📚 СПИСОК ПРОЧИТАННЫХ КНИГ (всего: {len(books)})")
+        print("=" * 60)
+        
+        for i, book in enumerate(books, start=1):
+            print(f"{i:3}. {book}")
+        
+        print("-" * 60)
+    
+    def show_average_rating_interactive(self):
+        """Показывает среднюю оценку."""
+        books = self.service.get_all_books()
+        
+        if not books:
+            print("\n📭 Список книг пуст, средняя оценка недоступна.")
+            return
+        
+        avg = self.service.get_average_rating()
+        print(f"\n⭐ Средняя оценка всех книг: {avg:.2f}")
+        
+        # Дополнительная статистика
+        ratings_distribution = {}
+        for book in books:
+            ratings_distribution[book.rating] = ratings_distribution.get(book.rating, 0) + 1
+        
+        print("📊 Распределение оценок:")
+        for rating in range(5, 0, -1):
+            count = ratings_distribution.get(rating, 0)
+            bar = "█" * count if count > 0 else "░"
+            print(f"   {rating}⭐: {bar} ({count})")
+    
+    def show_author_stats_interactive(self):
+        """Показывает статистику по авторам."""
+        stats = self.service.get_author_stats()
+        
+        if not stats:
+            print("\n📭 Список книг пуст, статистика по авторам недоступна.")
+            return
+        
+        print("\n" + "=" * 50)
+        print("👨‍💼 СТАТИСТИКА ПО АВТОРАМ")
+        print("=" * 50)
+        
+        # Сортируем по количеству книг (по убыванию)
+        sorted_stats = sorted(stats.items(), key=lambda x: x[1], reverse=True)
+        
+        for author, count in sorted_stats:
+            books_word = "книга" if count == 1 else "книги" if 2 <= count <= 4 else "книг"
+            print(f"   {author}: {count} {books_word}")
+        
+        print(f"\n📊 Всего авторов: {len(stats)}")
+        print("-" * 50)
+    
+    def delete_book_interactive(self):
+        """Интерактивное удаление книги."""
+        books = self.service.get_all_books()
+        
+        if not books:
+            print("\n📭 Список книг пуст, удалять нечего.")
+            return
+        
+        self.show_all_books_interactive()
+        
+        try:
+            index = int(input("\n🗑️  Введите номер книги для удаления: ")) - 1
+            self.service.delete_book(index)
+        except ValueError:
+            print("❌ Пожалуйста, введите корректный номер!")
+    
+    def search_books_interactive(self):
+        """Интерактивный поиск книг."""
+        query = input("\n🔍 Введите текст для поиска (автор или название): ").strip()
+        
+        if not query:
+            print("❌ Поисковый запрос не может быть пустым!")
+            return
+        
+        results = self.service.search_books(query)
+        
+        if not results:
+            print(f"\n📭 Ничего не найдено по запросу '{query}'")
+            return
+        
+        print(f"\n🔍 РЕЗУЛЬТАТЫ ПОИСКА: '{query}' (найдено: {len(results)})")
+        print("=" * 60)
+        
+        for i, book in enumerate(results, start=1):
+            print(f"{i:3}. {book}")
+        
+        print("-" * 60)
+    
+    def run_tests(self):
+        """Запускает встроенные тесты."""
+        print("\n" + "=" * 50)
+        print("🧪 ЗАПУСК МОДУЛЬНЫХ ТЕСТОВ")
+        print("=" * 50)
+        
+        tests_passed = 0
+        tests_failed = 0
+        
+        # Тест 1: Валидация корректной даты
+        print("\n1. Тест валидации корректной даты...")
+        test_date = validate_date("2024-12-25")
+        assert test_date == "2024-12-25", "Дата 2024-12-25 должна быть валидной"
+        test_date = validate_date("25.12.2024")
+        assert test_date == "2024-12-25", "Дата 25.12.2024 должна быть валидной"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Тест 2: Валидация НЕкорректной даты (исправление!)
+        print("\n2. Тест валидации НЕкорректной даты...")
+        assert validate_date("32.13.2024") is None, "32.13.2024 - несуществующая дата"
+        assert validate_date("12.45.2009") is None, "12.45.2009 - 45 дня не существует"
+        assert validate_date("31.02.2024") is None, "31 февраля не существует"
+        assert validate_date("2024-13-01") is None, "13 месяца не существует"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Тест 3: Проверка високосного года
+        print("\n3. Тест високосного года...")
+        assert validate_date("29.02.2024") == "2024-02-29", "29.02.2024 - валидная дата"
+        assert validate_date("29.02.2023") is None, "29.02.2023 - невалидная дата"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Тест 4: Добавление книги
+        print("\n4. Тест добавления книги...")
+        repo = BookRepository("test_books.json")
+        service = BookService(repo)
+        
+        # Очистка перед тестом
+        repo.save_books([])
+        
+        book = service.add_book("Тестовый Автор", "Тестовая Книга", 5, "2024-12-25")
+        assert book is not None, "Книга должна добавиться"
+        assert book.author == "Тестовый Автор", "Автор должен совпадать"
+        assert book.title == "Тестовая Книга", "Название должно совпадать"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Тест 5: Защита от дубликатов
+        print("\n5. Тест защиты от дубликатов...")
+        duplicate = service.add_book("Тестовый Автор", "Тестовая Книга", 4, "2024-12-26")
+        assert duplicate is None, "Дубликат не должен добавляться"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Тест 6: Средняя оценка
+        print("\n6. Тест расчета средней оценки...")
+        service.add_book("Автор2", "Книга2", 3, "2024-12-25")
+        avg = service.get_average_rating()
+        assert avg == 4.0, f"Средняя оценка должна быть 4.0, получено {avg}"
+        print("   ✅ PASS")
+        tests_passed += 1
+        
+        # Очистка тестового файла
+        import os
+        if os.path.exists("test_books.json"):
+            os.remove("test_books.json")
+        
+        print("\n" + "=" * 50)
+        print(f"📊 РЕЗУЛЬТАТЫ ТЕСТОВ: {tests_passed} пройдено, {tests_failed} не пройдено")
+        print("=" * 50)
+        
+        if tests_failed == 0:
+            print("\n🎉 ВСЕ ТЕСТЫ ПРОЙДЕНЫ УСПЕШНО!")
+        else:
+            print("\n❌ НЕКОТОРЫЕ ТЕСТЫ НЕ ПРОЙДЕНЫ!")
+        
+        input("\nНажмите Enter для продолжения...")
+    
+    def run(self):
+        """Главный цикл приложения."""
+        logger.info("Запуск Book Tracker")
+        print("\n📚 Добро пожаловать в Book Tracker!")
+        print("Система учета прочитанных книг")
+        
+        while True:
+            self.display_menu()
+            choice = input("Выберите действие: ").strip()
+            
+            if choice == "1":
+                self.add_book_interactive()
+            elif choice == "2":
+                self.show_all_books_interactive()
+            elif choice == "3":
+                self.show_average_rating_interactive()
+            elif choice == "4":
+                self.show_author_stats_interactive()
+            elif choice == "5":
+                self.delete_book_interactive()
+            elif choice == "6":
+                self.search_books_interactive()
+            elif choice == "7":
+                self.run_tests()
+            elif choice == "8":
+                print("\n👋 До свидания! Хорошего дня!")
+                logger.info("Завершение работы Book Tracker")
+                break
+            else:
+                print("❌ Неверный выбор! Пожалуйста, выберите 1-8.")
+
+
+# ============================================================
+# ТОЧКА ВХОДА
+# ============================================================
+
+def main():
+    """Главная функция приложения."""
+    try:
+        app = BookTrackerCLI()
+        app.run()
+    except KeyboardInterrupt:
+        print("\n\n👋 Программа прервана пользователем. До свидания!")
+        logger.info("Программа прервана пользователем")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Необработанная ошибка: {e}", exc_info=True)
+        print(f"\n❌ Критическая ошибка: {e}")
+        print("Пожалуйста, проверьте файл book_tracker.log для деталей")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
